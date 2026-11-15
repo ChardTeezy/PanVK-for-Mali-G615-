@@ -1,0 +1,26 @@
+{
+  "base": {
+    "name": "panvk-kbase-android (universal Mesa PanVK on mali_kbase, v6-v14)",
+    "url": "https://github.com/zenithblue-oss/panvk-kbase-android",
+    "commit": "cf70e02b918e1864cbcd746a7fefa57b96c673ce",
+    "csfMax": 233,
+    "wipMax": "0175",
+    "note": "Patch families are applied in the base's own order (prepare-rc5-tree.sh): common android kbase-common app-loader wsi csf csf-v11 jm-v9 jm-v7, then git am of jm-v7-wip."
+  },
+  "mesa": {
+    "url": "https://gitlab.freedesktop.org/mesa/mesa.git",
+    "commit": "5a07217f034b3e50d8c7c7794f97a2df1742613b",
+    "version": "26.3.0-devel"
+  },
+  "communityConfigs": {
+    "name": "Winlator-Mali-Community-Configs (Gunacharan)",
+    "url": "https://github.com/GunaCharanTeja/Winlator-Mali-Community-Configs",
+    "commit": "92ef13887cd0a193eedc94310608ad5084dadc83",
+    "note": "Read at build time by tools/winlator_presets.py; not vendored (the repository has no license file)."
+  },
+  "ndk": {
+    "version": "r27c",
+    "url": "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip"
+  },
+  "libdrm": "libdrm-2.4.125"
+}

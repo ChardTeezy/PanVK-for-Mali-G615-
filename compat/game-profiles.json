@@ -1,0 +1,29 @@
+{
+  "comment": "Per-game driver profiles for PanVK on Mali-G615 MC2. tools/gen_driconf.py turns this into overlay/src/panfrost/vulkan/00-panvk-defaults.conf. Match is on VkApplicationInfo::applicationName, which DXVK and vkd3d-proton set to the game's .exe file name. Only add an entry with evidence (a log, a device run, a base-project worklog or several matching community configs) and say what it is in 'evidence'.",
+  "baseConfSha256": "2f9988ee621bd2a5dbb09552433250fc27a2f33e209ad5765f3b1c5e742872e9",
+  "groups": [
+    {
+      "id": "unity-vram-cap",
+      "title": "Unity titles: cap reported video memory to 2 GiB",
+      "why": "Unity sizes its graphics memory from DXGI DedicatedVideoMemory and aborts with 'Crash!!!' when that is far above what is really free.",
+      "evidence": "Base project worklog worklogs/apps/panplay-games.md (Hollow Knight: Silksong on G615: 'Crash!!!' fixed by capping DXGI device memory to 2048 MiB). Same engine for the other entries; they run on G615 in the Winlator Mali community configs.",
+      "options": {"pan_env_defaults": "PANVK_HEAP_MAX_MB=2048"},
+      "apps": [
+        {"name": "Hollow Knight: Silksong", "exe": "Hollow Knight Silksong.exe"},
+        {"name": "Hollow Knight", "exe": "hollow_knight.exe"},
+        {"name": "Cuphead", "exe": "Cuphead.exe"},
+        {"name": "Ori and the Blind Forest: Definitive Edition", "exe": "oriDE.exe"},
+        {"name": "MiSide", "exe": "MiSideFull.exe"},
+        {"name": "Neon White", "exe": "Neon White.exe"},
+        {"name": "Dave the Diver", "exe": "DaveTheDiver.exe"},
+        {"name": "Firewatch", "exe": "Firewatch.exe"},
+        {"name": "Blasphemous 2", "exe": "Blasphemous 2.exe"},
+        {"name": "Megabonk", "exe": "Megabonk.exe"},
+        {"name": "Disco Elysium", "exe": "disco.exe"},
+        {"name": "Fears to Fathom - Ironbark Lookout", "exe": "Fears to Fathom - Ironbark Lookout.exe"},
+        {"name": "STORY OF SEASONS: Friends of Mineral Town", "exe": "STORY OF SEASONS Friends of Mineral Town.exe"},
+        {"name": "Cat Quest", "exe": "Cat Quest.exe"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  driver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      WORK: ${{ github.workspace }}/work
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex glslang-tools \
+            llvm-18-dev libclang-18-dev libclang-cpp18-dev libclc-18-dev \
+            llvm-spirv-18 libllvmspirvlib-18-dev spirv-tools libdrm-dev libudev-dev \
+            libexpat1-dev zlib1g-dev libelf-dev libx11-dev libx11-xcb-dev \
+            libxcb-randr0-dev libxcb-dri3-dev libxcb-present-dev libxcb-shm0-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev zip
+          pip install --user 'meson>=1.6' mako pyyaml pycparser packaging
+
+      - name: Tool unit tests
+        run: python3 -I tests/test_tools.py
+
+      - name: Fetch pinned base stack and Mesa
+        run: scripts/fetch-sources.sh
+
+      - name: Check generated driconf overlay is up to date
+        run: python3 tools/gen_driconf.py --base-conf work/mesa/src/panfrost/vulkan/00-panvk-defaults.conf --check
+
+      - name: Apply base stack + G615 MC2 patches (strict, no fuzz)
+        run: scripts/prepare-tree.sh
+
+      - name: Host codegen tools
+        run: scripts/build-host-tools.sh
+
+      - name: Host tests (driconf matching, env defaults)
+        run: tests/run-host-tests.sh
+
+      - name: Android arm64 build
+        run: scripts/build-android.sh --ndk "$ANDROID_NDK_LATEST_HOME"
+
+      - name: Community configs (pinned)
+        run: |
+          C=$(python3 -c "import json;print(json.load(open('sources.lock.json'))['communityConfigs']['commit'])")
+          git init -q work/configs
+          git -C work/configs fetch -q --depth 1 https://github.com/GunaCharanTeja/Winlator-Mali-Community-Configs "$C"
+          git -C work/configs checkout -q FETCH_HEAD
+
+      - name: Package
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) VER="${GITHUB_REF_NAME#v}";;
+            *) VER="0.0.0-dev.$(git rev-parse --short HEAD)";;
+          esac
+          scripts/package.sh --version "$VER"
+          ls -l dist
+
+      - name: Check the preset converter against the pinned community configs
+        # Output is not uploaded: the community configs repository has no license file.
+        run: python3 -I tools/winlator_presets.py --configs work/configs --driver-name ci-check --out work/presets-check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panvk-g615-mc2
+          path: |
+            dist/*.zip
+            dist/libvulkan_panfrost.so
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: dist/*.zip

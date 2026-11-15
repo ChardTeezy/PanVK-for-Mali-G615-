@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PanVK G615 MC2 <panvk-g615-mc2@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 17:52:39 +0000
+Subject: [PATCH 2/2] panvk: small Mali-G615 (MC2) heap sizing and
+ PANVK_HEAP_MAX_MB
+
+Mali-G615 MC2 (Dimensity 7300/7400 class) ships in 6-8 GB phones. The
+device-local heap is reported as 75 % of RAM (Mesa heuristic), so an
+8 GB phone advertises ~5.6 GiB, while Android with Winlator, Wine and
+FEX running leaves roughly half of that free. DXVK, vkd3d-proton and the
+engines behind them (Unity, Unreal) size texture pools and the DXGI
+"dedicated video memory" from that number and then get the process
+killed by the low memory killer, or abort when allocations fail.
+Winlator Mali community configs for MC2 phones work around it by hand:
+42 of 43 use 2 GB video memory and many cap maxDeviceMemory.
+
+- Detect a small G615: prod id (11, 8, 3) with 3 or fewer shader cores.
+  PANVK_G615_SMALL=0 turns the tuning off, =1 forces it on (e.g. for an
+  8 GB MC6 phone).
+- When neither driconf nor the environment set heap_memory_percent,
+  report 40 % of RAM up to 6 GB, 45 % up to 8 GB, 55 % up to 12 GB and
+  60 % above (8 GB phone: ~3.3 GiB instead of ~5.6 GiB).
+- PANVK_HEAP_MAX_MB=<n> (n >= 256) caps the reported heap on any GPU.
+  Per-game profiles use it, e.g. the 2048 MiB cap that the base project
+  found fixes Unity's "Crash!!!" on Hollow Knight: Silksong.
+
+The budget (VK_EXT_memory_budget) logic is unchanged; it still follows
+MemAvailable and the reserve of csf-v11 patches 229 and later.
+---
+ src/panfrost/vulkan/panvk_physical_device.c | 66 ++++++++++++++++++++-
+ src/panfrost/vulkan/panvk_physical_device.h |  6 ++
+ 2 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 06c661e..cf3520d 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -513,10 +513,46 @@ get_device_heaps(struct panvk_physical_device *device,
+    int host_coherent_not_cached_idx = -1;
+    int host_cached_not_coherent_idx = -1;
+ 
+-   const uint64_t heap_size =
+-      os_get_gpu_heap_size(instance->drirc.misc.heap_memory_percent,
++   float heap_percent = instance->drirc.misc.heap_memory_percent;
++   uint64_t heap_ram = 0;
++
++   /* Small G615 (MC2): when neither driconf nor the environment picked a
++    * heap size (0 = heuristic), report less than the 75 % default. Android
++    * with Winlator, Wine and FEX running keeps roughly half of an 8 GiB
++    * phone free; Winlator Mali community configs for MC2 phones cap the
++    * device memory or use 2 GiB of video memory for the same reason. */
++   if (heap_percent == OS_GPU_HEAP_SIZE_HEURISTIC && device->small_g615 &&
++       os_get_total_physical_memory(&heap_ram) && heap_ram) {
++      if (heap_ram <= (6656ull << 20))       /* "6 GB" phones */
++         heap_percent = 0.40f;
++      else if (heap_ram <= (8704ull << 20))  /* "8 GB" phones */
++         heap_percent = 0.45f;
++      else if (heap_ram <= (12800ull << 20)) /* "12 GB" phones */
++         heap_percent = 0.55f;
++      else
++         heap_percent = 0.60f;
++   }
++
++   uint64_t heap_size =
++      os_get_gpu_heap_size(heap_percent,
+                            &instance->drirc.misc.heap_memory_percent);
+ 
++   /* PANVK_HEAP_MAX_MB=<n>: cap the reported heap (what DXGI shows as video
++    * memory). Per-game profiles use it for engines that size their pools
++    * from the adapter memory, e.g. Unity titles that abort with "Crash!!!"
++    * when the reported memory is far above what is free. */
++   const int64_t heap_max_mb = debug_get_num_option("PANVK_HEAP_MAX_MB", 0);
++   if (heap_max_mb >= 256 && heap_size > ((uint64_t)heap_max_mb << 20)) {
++      heap_size = (uint64_t)heap_max_mb << 20;
++      mesa_logi("panvk: heap capped to %" PRId64 " MiB (PANVK_HEAP_MAX_MB)",
++                heap_max_mb);
++   }
++
++   if (device->small_g615)
++      mesa_logi("panvk: small G615 heap %" PRIu64 " MiB (%.0f %% of RAM)",
++                heap_size >> 20,
++                instance->drirc.misc.heap_memory_percent * 100.0f);
++
+    device->memory.heap_count = 1;
+    device->memory.heaps[0] = (VkMemoryHeap){
+       .size = heap_size,
+@@ -1234,6 +1270,26 @@ panvk_marketing_name(const struct pan_model *model, unsigned core_count)
+    }
+ }
+ 
++/* g615-mc2: small Mali-G615 detection (see panvk_physical_device.h). */
++static void
++panvk_detect_small_g615(struct panvk_physical_device *device, unsigned arch,
++                        unsigned core_count)
++{
++   const int force = debug_get_num_option("PANVK_G615_SMALL", -1);
++
++   if (force >= 0)
++      device->small_g615 = force > 0;
++   else
++      device->small_g615 = arch == 11 && device->model &&
++                           device->model->gpu_prod_id ==
++                              PAN_PROD_ID(11, 8, 3) &&
++                           core_count <= 3;
++
++   if (device->small_g615)
++      mesa_logi("panvk: %s: small G615 tuning on (%u cores%s)", device->name,
++                core_count, force >= 0 ? ", PANVK_G615_SMALL" : "");
++}
++
+ VkResult
+ panvk_physical_device_init(struct panvk_physical_device *device,
+                            struct panvk_instance *instance,
+@@ -1297,6 +1353,9 @@ panvk_physical_device_init(struct panvk_physical_device *device,
+    sprintf(device->name, "%s MC%u",
+            panvk_marketing_name(device->model, core_count), core_count);
+ 
++   panvk_detect_small_g615(device, pan_arch(device->kmod.dev->props.gpu_id),
++                           core_count);
++
+    result = get_core_masks(device, instance);
+    if (result != VK_SUCCESS)
+       goto fail;
+@@ -1444,6 +1503,9 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
+    sprintf(device->name, "%s MC%u",
+            panvk_marketing_name(device->model, core_count), core_count);
+ 
++   panvk_detect_small_g615(device, pan_arch(device->kmod.dev->props.gpu_id),
++                           core_count);
++
+    result = get_core_masks(device, instance);
+    if (result != VK_SUCCESS)
+       goto fail_kbase;
+diff --git a/src/panfrost/vulkan/panvk_physical_device.h b/src/panfrost/vulkan/panvk_physical_device.h
+index fd102fa..562c19d 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.h
++++ b/src/panfrost/vulkan/panvk_physical_device.h
+@@ -92,6 +92,12 @@ struct panvk_physical_device {
+ 
+    uint64_t compute_core_mask;
+    uint64_t fragment_core_mask;
++
++   /* Mali-G615 with 3 or fewer shader cores (MC2 parts: Dimensity 7300,
++    * 7350, 7400, 6400-class). These ship in 6-8 GiB phones, where the
++    * default 75 % of RAM heap makes DXVK/vkd3d and Unity/UE size their
++    * pools past what Android leaves free. PANVK_G615_SMALL=0/1 overrides. */
++   bool small_g615;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(panvk_physical_device, vk.base, VkPhysicalDevice,

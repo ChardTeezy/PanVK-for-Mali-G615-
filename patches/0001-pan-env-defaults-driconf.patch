@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PanVK G615 MC2 <panvk-g615-mc2@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 17:52:39 +0000
+Subject: [PATCH 1/2] panvk: add the pan_env_defaults driconf option for
+ per-game knob defaults
+
+The kbase stack has around a hundred PANVK_* runtime knobs, but users in
+Winlator have to type them per container, and the right value depends on
+the game. Mesa's driconf already matches applications: DXVK and
+vkd3d-proton pass the game's .exe name as VkApplicationInfo
+applicationName, so a <application application_name_match="..."> entry
+in 00-panvk-defaults.conf can select per-game settings.
+
+Add a string option, pan_env_defaults, holding "KEY=VALUE;KEY=VALUE".
+When the instance is created the list is applied with setenv(..., 0):
+- only PANVK_* and MESA_* keys are accepted,
+- PANVK_DEBUG is rejected (it is parsed before the instance exists),
+- a key the user already set, in the environment or as an Android
+  debug.mesa.* / vendor.mesa.* / mesa.* property, is kept.
+
+Every applied or skipped key is logged, so a logcat shows which profile
+ran. panvk_apply_env_defaults() is exported for device tuning code.
+
+Default: empty, no behavior change.
+---
+ src/panfrost/vulkan/panvk_drirc_gen.py |  8 +++
+ src/panfrost/vulkan/panvk_instance.c   | 75 ++++++++++++++++++++++++++
+ src/panfrost/vulkan/panvk_instance.h   |  7 +++
+ 3 files changed, 90 insertions(+)
+
+diff --git a/src/panfrost/vulkan/panvk_drirc_gen.py b/src/panfrost/vulkan/panvk_drirc_gen.py
+index abd061d..88ea412 100644
+--- a/src/panfrost/vulkan/panvk_drirc_gen.py
++++ b/src/panfrost/vulkan/panvk_drirc_gen.py
+@@ -16,6 +16,7 @@ def declare_options():
+ 
+     B = drirc_gen.DrircBool
+     U64 = drirc_gen.DrircUint64
++    S = drirc_gen.DrircString
+ 
+     UINT64_MAX = (1 << 64) - 1
+ 
+@@ -33,6 +34,13 @@ def declare_options():
+           "pre-rasterization stages through gpu_prerast, v13+ through IDVS; "
+           "set false to disable)",
+           c_name="enable_vertex_pipeline_stores_atomics"),
++        # No default value: DRI_CONF_OPT_S stringifies its default, so "" would
++        # become the two-character string "\"\"".
++        S("pan_env_defaults", None,
++          "Semicolon separated KEY=VALUE list of PANVK_* / MESA_* knobs applied "
++          "as defaults when the instance is created (a value already set in the "
++          "environment or an Android property always wins)",
++          c_name="env_defaults"),
+         B("pan_force_enable_shader_atomics", False,
+           "Enable fragmentStoresAndAtomics and vertexPipelineStoresAndAtomics on any "
+           "architecture. (This may not work reliably and is for debug purposes only!)",
+diff --git a/src/panfrost/vulkan/panvk_instance.c b/src/panfrost/vulkan/panvk_instance.c
+index 698d343..274dc24 100644
+--- a/src/panfrost/vulkan/panvk_instance.c
++++ b/src/panfrost/vulkan/panvk_instance.c
+@@ -15,6 +15,10 @@
+ #include "util/mesa-blake3.h"
+ #include "util/os_misc.h"
+ #include "util/u_call_once.h"
++#include "util/simple_mtx.h"
++#include "util/log.h"
++#include <stdlib.h>
++#include <string.h>
+ 
+ #if defined(HAVE_PAN_KMOD_KBASE)
+ #include <limits.h>
+@@ -329,6 +333,65 @@ panvk_kmod_free(const struct pan_kmod_allocator *allocator, void *data)
+    return vk_free(vkalloc, data);
+ }
+ 
++static bool
++panvk_env_default_key_allowed(const char *key)
++{
++   if (!strcmp(key, "PANVK_DEBUG"))
++      return false;
++   return !strncmp(key, "PANVK_", 6) || !strncmp(key, "MESA_", 5);
++}
++
++void
++panvk_apply_env_defaults(const char *list, const char *origin)
++{
++   /* setenv() is not thread safe against concurrent getenv(). This runs
++    * from vkCreateInstance/vkEnumeratePhysicalDevices, before the driver
++    * starts its own threads; serialize the callers we control. */
++   static simple_mtx_t env_mtx = SIMPLE_MTX_INITIALIZER;
++
++   if (!list || !list[0])
++      return;
++
++   char *dup = strdup(list);
++   if (!dup)
++      return;
++
++   simple_mtx_lock(&env_mtx);
++
++   char *save = NULL;
++   for (char *tok = strtok_r(dup, ";", &save); tok;
++        tok = strtok_r(NULL, ";", &save)) {
++      while (*tok == ' ' || *tok == '\t')
++         tok++;
++
++      char *eq = strchr(tok, '=');
++      if (!eq || eq == tok)
++         continue;
++
++      *eq = '\0';
++      const char *val = eq + 1;
++
++      if (!panvk_env_default_key_allowed(tok)) {
++         mesa_logw("panvk: %s: ignoring %s (only PANVK_* and MESA_* knobs, "
++                   "not PANVK_DEBUG)", origin, tok);
++         continue;
++      }
++
++      const char *cur = os_get_option(tok);
++      if (cur) {
++         mesa_logi("panvk: %s: keeping user %s=%s (default %s)", origin, tok,
++                   cur, val);
++         continue;
++      }
++
++      if (setenv(tok, val, 0) == 0)
++         mesa_logi("panvk: %s: %s=%s", origin, tok, val);
++   }
++
++   simple_mtx_unlock(&env_mtx);
++   free(dup);
++}
++
+ static void
+ panvk_init_dri_options(struct panvk_instance *instance)
+ {
+@@ -340,6 +403,18 @@ panvk_init_dri_options(struct panvk_instance *instance)
+                               .engineName = instance->vk.app_info.engine_name,
+                               .engineVersion = instance->vk.app_info.engine_version,
+                            });
++
++   /* Per-game knob defaults from 00-panvk-defaults.conf (pan_env_defaults).
++    * DXVK and vkd3d-proton pass the game's .exe name as applicationName, so
++    * profiles match on that. */
++   if (instance->drirc.misc.env_defaults &&
++       strchr(instance->drirc.misc.env_defaults, '=')) {
++      mesa_logi("panvk: app profile for \"%s\" (engine \"%s\")",
++                instance->vk.app_info.app_name ? instance->vk.app_info.app_name : "",
++                instance->vk.app_info.engine_name ? instance->vk.app_info.engine_name : "");
++      panvk_apply_env_defaults(instance->drirc.misc.env_defaults,
++                               "app profile");
++   }
+ }
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL
+diff --git a/src/panfrost/vulkan/panvk_instance.h b/src/panfrost/vulkan/panvk_instance.h
+index ec1544e..75f71ac 100644
+--- a/src/panfrost/vulkan/panvk_instance.h
++++ b/src/panfrost/vulkan/panvk_instance.h
+@@ -75,6 +75,13 @@ struct panvk_instance {
+    } kmod;
+ };
+ 
++/* Apply a "KEY=VALUE;KEY=VALUE" list of PANVK_* / MESA_* knobs as process
++ * defaults: a key already set in the environment (or, on Android, as a
++ * debug.mesa.* / vendor.mesa.* / mesa.* property) is left alone. Used by the
++ * pan_env_defaults driconf option (per-game profiles) and by device tuning.
++ * PANVK_DEBUG is parsed before the instance exists, so it is rejected here. */
++void panvk_apply_env_defaults(const char *list, const char *origin);
++
+ VK_DEFINE_HANDLE_CASTS(panvk_instance, vk.base, VkInstance,
+                        VK_OBJECT_TYPE_INSTANCE)
+ 

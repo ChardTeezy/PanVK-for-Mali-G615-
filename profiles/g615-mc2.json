@@ -1,0 +1,41 @@
+{
+  "profile": "g615-mc2-v11-csf",
+  "gpu": "Mali-G615 MC2",
+  "gpuProdId": "PAN_PROD_ID(11, 8, 3)",
+  "panArch": 11,
+  "frontend": "CSF",
+  "kernelInterface": "mali_kbase (/dev/mali0)",
+  "shaderCores": 2,
+  "socs": [
+    "MediaTek Dimensity 7300 family (MT6878)",
+    "MediaTek Dimensity 7400 family",
+    "other SoCs that report Mali-G615 with 2 cores"
+  ],
+  "devicesSeenInCommunityConfigs": [
+    "motorola edge 50 neo (vienna)",
+    "motorola edge 60 fusion (scout)",
+    "SM-X230 (gta11pwifi)",
+    "CPH2763 (k6878v1_64)",
+    "Infinix X6879",
+    "Infinix X6870",
+    "TECNO LJ8k",
+    "A015 (Tetris)",
+    "A001T (Galaxian)"
+  ],
+  "typicalRam": [
+    "6GB",
+    "8GB",
+    "12GB"
+  ],
+  "tuning": {
+    "detect": "arch 11, prod id G615, <= 3 shader cores (override: PANVK_G615_SMALL=0|1)",
+    "heapPercentOfRam": {
+      "<=6GB": 0.4,
+      "<=8GB": 0.45,
+      "<=12GB": 0.55,
+      ">12GB": 0.6
+    },
+    "baseDefault": "0.75 of RAM (Mesa heuristic)"
+  },
+  "devicesNote": "Model strings as reported in Winlator Mali community configs with gpu=Mali-G615 MC2."
+}
